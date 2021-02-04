@@ -256,15 +256,19 @@ fn main() {
     println!("took {:?}", start.elapsed());
 
     if let Some((_, n)) = best_solution.as_ref() {
-        let mut x: Option<&RoomMut> = Some(n);
-        while let Some(m) = x {
-            printy(&room_immut, m);
-            x = if let Some((pred_room_mut, direction)) = &search_nodes.get(m).unwrap().pred {
-                println!("\n{:?}", direction);
-                Some(pred_room_mut)
-            } else {
-                None
-            };
+        let mut pred_stack = vec![];
+        let mut x: &RoomMut = n;
+        while let Some((pred_room_mut, direction)) = &search_nodes.get(x).unwrap().pred {
+            // continue building stack
+            pred_stack.push((x, direction));
+            x = pred_room_mut;
+        }
+        // start printing, unwinding stack
+        // print root state (with no pred, reached by no directional move)
+        printy(&room_immut, x);
+        for (room_mut, direction) in pred_stack.iter().rev() {
+            println!("input: \n{:?}", direction);
+            printy(&room_immut, room_mut);
         }
     }
 }
