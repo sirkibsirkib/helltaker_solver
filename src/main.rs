@@ -267,7 +267,7 @@ fn main() {
         // print root state (with no pred, reached by no directional move)
         printy(&room_immut, x);
         for (room_mut, direction) in pred_stack.iter().rev() {
-            println!("input: \n{:?}", direction);
+            println!("\ninput: {:?}", direction);
             printy(&room_immut, room_mut);
         }
     }
