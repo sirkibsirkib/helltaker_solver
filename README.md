@@ -1,4 +1,4 @@
-#Helltaker Solver
+# Helltaker Solver
 
 A little pet project which finds an optimal solution for a given puzzle room of Helltaker, a free little video game available on Steam with some very catchy music. The tool uses a memoized search, printing the solution as a sequence of the puzzle's state, laid out over the course of its solution. 
 
