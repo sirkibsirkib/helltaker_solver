@@ -153,7 +153,7 @@ fn printy(i: &RoomImmut, m: &RoomMut) {
                 'O'
             } else if i.lock_at == Some(c) {
                 'L'
-            } else if i.key_at == Some(c) {
+            } else if !m.got_key && i.key_at == Some(c) {
                 'K'
             } else if i.goal_at == c {
                 'G'
