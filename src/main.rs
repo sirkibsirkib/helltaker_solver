@@ -80,9 +80,6 @@ fn parse_init(s: &[u8]) -> Option<(RoomImmut, RoomMut)> {
 
     let mut c = Coord::new(0, 0);
     for &byte in s {
-        if !c.is_within_bounds() {
-            return None;
-        }
         match byte {
             b'|' => {
                 c.y += 1;
@@ -97,6 +94,9 @@ fn parse_init(s: &[u8]) -> Option<(RoomImmut, RoomMut)> {
             b'L' => lock_at = Some(c),
             b' ' => {}
             _ => continue,
+        }
+        if !c.is_within_bounds() {
+            return None;
         }
         c.x += 1;
     }
@@ -170,8 +170,8 @@ fn main() {
     let (room_immut, init_room_mut) = parse_init(INIT_ROOM_BYTE_STR).unwrap();
 
     let mut to_visit = vec![init_room_mut.clone()];
-    let mut search_nodes: HashMap<RoomMut, SearchNode> =
-        maplit::hashmap! { init_room_mut => SearchNode { pred: None, steps_left: 33 }};
+    let mut search_nodes = HashMap::<RoomMut, SearchNode>::default();
+    search_nodes.insert(init_room_mut, SearchNode { pred: None, steps_left: 33 });
     let mut best_solution: Option<(u32, RoomMut)> = None;
 
     let start = std::time::Instant::now();

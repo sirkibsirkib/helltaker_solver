@@ -8,5 +8,4 @@ edition = "2018"
 
 [dependencies]
 bidir-map = "1.0.0"
-maplit = "1.0.2"
 derive-new = "0.5.8"
