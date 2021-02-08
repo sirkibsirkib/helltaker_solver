@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 bidir-map = "1.0.0"
 derive-new = "0.5.8"
+fxhash = "0.2.1"

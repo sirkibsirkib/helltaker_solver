@@ -1,8 +1,5 @@
-use std::collections::HashMap;
-
 const ROOM_DIMS: [u8; 2] = [16, 8];
 const WORD_BITS: usize = std::mem::size_of::<usize>() * 8;
-
 const INIT_ROOM_BYTE_STR: &[u8] = // newline, thanks
 b"
 ###########|
@@ -48,9 +45,10 @@ enum Direction {
     Left,
     Right,
 }
-struct SearchNode {
-    pred: Option<(RoomMut, Direction)>,
-    steps_left: u32,
+
+struct RoomMutEdge {
+    predecessor: RoomMut,
+    step_direction: Direction,
 }
 
 /////////////////////////
@@ -140,6 +138,11 @@ impl std::iter::FromIterator<Coord> for CoordSet {
         s
     }
 }
+impl Direction {
+    fn all_directions() -> impl Iterator<Item = Self> {
+        [Direction::Up, Direction::Down, Direction::Left, Direction::Right].iter().copied()
+    }
+}
 
 fn printy(i: &RoomImmut, m: &RoomMut) {
     for y in 0..ROOM_DIMS[1] {
@@ -166,109 +169,99 @@ fn printy(i: &RoomImmut, m: &RoomMut) {
     }
 }
 
-fn main() {
-    let (room_immut, init_room_mut) = parse_init(INIT_ROOM_BYTE_STR).unwrap();
+fn print_solution_path(
+    i: &RoomImmut,
+    end: &RoomMut,
+    room_graph: &fxhash::FxHashMap<RoomMut, Option<RoomMutEdge>>,
+) {
+    let mut node = end;
+    let mut pred_stack = vec![];
+    while let Some(room_mut_edge) = room_graph.get(node).unwrap().as_ref() {
+        // continue building stack
+        pred_stack.push((node, room_mut_edge.step_direction));
+        node = &room_mut_edge.predecessor;
+    }
+    // start printing, unwinding stack
+    // print root state (with no pred, reached by no directional move)
+    printy(i, node);
+    for ((room_mut, direction), step_num) in pred_stack.into_iter().rev().zip(1..) {
+        println!("\nstep: {}, input: {:?}", step_num, direction);
+        printy(i, room_mut);
+    }
+}
 
-    let mut to_visit = vec![init_room_mut.clone()];
-    let mut search_nodes = HashMap::<RoomMut, SearchNode>::default();
-    search_nodes.insert(init_room_mut, SearchNode { pred: None, steps_left: 33 });
-    let mut best_solution: Option<(u32, RoomMut)> = None;
-
-    let start = std::time::Instant::now();
-
-    // invariant: solutions elements unique
-    // invariant: to_visit have steps_left > 0
-    while let Some(room_mut) = to_visit.pop() {
-        let mut try_add_room_mut = |search_nodes: &mut HashMap<RoomMut, SearchNode>,
-                                    old: &RoomMut,
-                                    direction: Direction,
-                                    new: RoomMut| {
-            let new_steps_left = search_nodes.get(&old).unwrap().steps_left - 1;
-            use std::collections::hash_map::Entry;
-            let added_new = match search_nodes.entry(new.clone()) {
-                Entry::Vacant(v) => {
-                    // new configuration
-                    v.insert(SearchNode {
-                        pred: Some((old.clone(), direction)),
-                        steps_left: new_steps_left,
-                    });
-                    true
-                }
-                Entry::Occupied(o) => {
-                    // already encountered this configuration
-                    let o = o.into_mut();
-                    if new_steps_left > o.steps_left {
-                        o.pred = Some((old.clone(), direction));
-                        o.steps_left = new_steps_left;
-                        true
-                    } else {
-                        false
-                    }
-                }
-            };
-            if added_new {
-                if new.player_at == room_immut.goal_at {
-                    if let Some((best_steps_left, best_room_mut)) = best_solution.as_mut() {
-                        if *best_steps_left > new_steps_left {
-                            *best_steps_left = new_steps_left;
-                            *best_room_mut = new.clone();
-                        }
-                    } else {
-                        best_solution = Some((new_steps_left, new.clone()));
-                    }
-                }
-                if new_steps_left > 0 {
-                    to_visit.push(new);
-                }
-            }
-        };
-        for &direction in [Direction::Up, Direction::Down, Direction::Left, Direction::Right].iter()
+fn resulting_room_mut(i: &RoomImmut, m: &RoomMut, direction: Direction) -> Option<RoomMut> {
+    if let Some(step1) = m.player_at.take_step(direction) {
+        if !i.walls_at.contains(step1)
+            && !m.rocks_at.contains(step1)
+            && (m.got_key || Some(step1) != i.lock_at)
         {
-            if let Some(step1) = room_mut.player_at.take_step(direction) {
-                if !room_immut.walls_at.contains(step1)
-                    && !room_mut.rocks_at.contains(step1)
-                    && (room_mut.got_key || Some(step1) != room_immut.lock_at)
-                {
-                    // player can move to `step1`
-                    let mut new = room_mut.clone();
-                    new.player_at = step1;
-                    if Some(new.player_at) == room_immut.key_at {
-                        new.got_key = true;
-                    }
-                    try_add_room_mut(&mut search_nodes, &room_mut, direction, new);
-                }
-                if let Some(step2) = step1.take_step(direction) {
-                    if room_mut.rocks_at.contains(step1)
-                        && !room_mut.rocks_at.contains(step2)
-                        && !room_immut.walls_at.contains(step2)
-                        && Some(step2) != room_immut.lock_at
-                    {
-                        // player can kick rock from step1 to step2
-                        let mut new = room_mut.clone();
-                        new.rocks_at.remove(step1);
-                        new.rocks_at.insert(step2);
-                        try_add_room_mut(&mut search_nodes, &room_mut, direction, new);
-                    }
-                }
+            // player can move to `step1`
+            let mut new = m.clone();
+            new.player_at = step1;
+            if Some(new.player_at) == i.key_at {
+                new.got_key = true;
+            }
+            return Some(new);
+        }
+        if let Some(step2) = step1.take_step(direction) {
+            if m.rocks_at.contains(step1)
+                && !m.rocks_at.contains(step2)
+                && !i.walls_at.contains(step2)
+                && Some(step2) != i.lock_at
+            {
+                // player can kick rock from step1 to step2
+                let mut new = m.clone();
+                new.rocks_at.remove(step1);
+                new.rocks_at.insert(step2);
+                return Some(new);
             }
         }
     }
-    println!("took {:?}", start.elapsed());
+    None
+}
 
-    if let Some((_, n)) = best_solution.as_ref() {
-        let mut pred_stack = vec![];
-        let mut x: &RoomMut = n;
-        while let Some((pred_room_mut, direction)) = &search_nodes.get(x).unwrap().pred {
-            // continue building stack
-            pred_stack.push((x, direction));
-            x = pred_room_mut;
+fn main() {
+    let (room_immut, init_room_mut) = parse_init(INIT_ROOM_BYTE_STR).unwrap();
+
+    let mut room_graph = fxhash::FxHashMap::<RoomMut, Option<RoomMutEdge>>::default();
+    room_graph.insert(init_room_mut.clone(), None);
+
+    let start = std::time::Instant::now();
+
+    // Invariant: no duplication of contents in (to_visit U visiting)
+    //   elements only added with addition to new keys in `room_graph`.
+    let mut visiting = Vec::with_capacity(128);
+    let mut to_visit = Vec::with_capacity(128);
+    visiting.push(init_room_mut);
+
+    for steps_taken in 0.. {
+        // println!("steps taken {}. visiting {}", steps_taken, visiting.len());
+        if visiting.is_empty() {
+            println!("No solutions");
+            return;
         }
-        // start printing, unwinding stack
-        // print root state (with no pred, reached by no directional move)
-        printy(&room_immut, x);
-        for (room_mut, direction) in pred_stack.iter().rev() {
-            println!("\ninput: {:?}", direction);
-            printy(&room_immut, room_mut);
+        for room_mut in visiting.drain(..) {
+            for direction in Direction::all_directions() {
+                if let Some(new_room_mut) = resulting_room_mut(&room_immut, &room_mut, direction) {
+                    use std::collections::hash_map::Entry;
+                    if let Entry::Vacant(ve) = room_graph.entry(new_room_mut.clone()) {
+                        ve.insert(Some(RoomMutEdge {
+                            predecessor: room_mut.clone(),
+                            step_direction: direction,
+                        }));
+                        if new_room_mut.player_at == room_immut.goal_at {
+                            // found a solution!
+                            println!("Took {:?}", start.elapsed());
+                            print_solution_path(&room_immut, &room_mut, &room_graph);
+                            return;
+                        } else {
+                            to_visit.push(new_room_mut);
+                        }
+                    }
+                }
+            }
         }
+        std::mem::swap(&mut to_visit, &mut visiting);
     }
 }
