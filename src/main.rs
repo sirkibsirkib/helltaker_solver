@@ -26,6 +26,8 @@ struct Coord {
 #[derive(Clone, Eq, PartialEq)]
 struct RoomImmut {
     walls_at: CoordSet,
+    odd_spikes_at: CoordSet,
+    even_spikes_at: CoordSet,
     key_at: Option<Coord>,
     lock_at: Option<Coord>,
     goal_at: Coord,
@@ -34,8 +36,10 @@ struct RoomImmut {
 #[derive(Clone, Eq, PartialEq, Hash)]
 struct RoomMut {
     rocks_at: CoordSet,
+    skelly_at: CoordSet,
     player_at: Coord,
     got_key: bool,
+    odd_moves_made: bool,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -72,8 +76,8 @@ impl Coord {
 }
 
 fn parse_init(s: &[u8]) -> Option<(RoomImmut, RoomMut)> {
-    let mut walls_at = CoordSet::default();
-    let mut rocks_at = CoordSet::default();
+    let [mut walls_at, mut rocks_at, mut odd_spikes_at, mut even_spikes_at, mut skelly_at] =
+        <[CoordSet; 5]>::default();
     let [mut goal_at, mut lock_at, mut key_at, mut player_at] = [None; 4];
 
     let mut c = Coord::new(0, 0);
@@ -86,6 +90,9 @@ fn parse_init(s: &[u8]) -> Option<(RoomImmut, RoomMut)> {
             }
             b'#' => walls_at.insert(c),
             b'O' => rocks_at.insert(c),
+            b'$' => skelly_at.insert(c),
+            b',' => odd_spikes_at.insert(c),
+            b'.' => even_spikes_at.insert(c),
             b'G' => goal_at = Some(c),
             b'@' => player_at = Some(c),
             b'K' => key_at = Some(c),
@@ -99,8 +106,14 @@ fn parse_init(s: &[u8]) -> Option<(RoomImmut, RoomMut)> {
         c.x += 1;
     }
     Some((
-        RoomImmut { walls_at, goal_at: goal_at?, key_at, lock_at },
-        RoomMut { rocks_at, got_key: false, player_at: player_at? },
+        RoomImmut { walls_at, goal_at: goal_at?, key_at, lock_at, odd_spikes_at, even_spikes_at },
+        RoomMut {
+            rocks_at,
+            got_key: false,
+            player_at: player_at?,
+            odd_moves_made: false,
+            skelly_at,
+        },
     ))
 }
 
@@ -154,12 +167,18 @@ fn printy(i: &RoomImmut, m: &RoomMut) {
                 '#'
             } else if m.rocks_at.contains(c) {
                 'O'
+            } else if m.skelly_at.contains(c) {
+                '$'
             } else if i.lock_at == Some(c) {
                 'L'
             } else if !m.got_key && i.key_at == Some(c) {
                 'K'
             } else if i.goal_at == c {
                 'G'
+            } else if i.odd_spikes_at.contains(c) {
+                ','
+            } else if i.even_spikes_at.contains(c) {
+                '.'
             } else {
                 ' '
             };
@@ -190,14 +209,19 @@ fn print_solution_path(
     }
 }
 
+fn coord_obstructed(i: &RoomImmut, m: &RoomMut, c: Coord) -> bool {
+    i.walls_at.contains(c)
+        || m.rocks_at.contains(c)
+        || m.skelly_at.contains(c)
+        || (!m.got_key && Some(c) == i.lock_at)
+}
+
 fn resulting_room_mut(i: &RoomImmut, m: &RoomMut, direction: Direction) -> Option<RoomMut> {
     if let Some(step1) = m.player_at.take_step(direction) {
-        if !i.walls_at.contains(step1)
-            && !m.rocks_at.contains(step1)
-            && (m.got_key || Some(step1) != i.lock_at)
-        {
+        if !coord_obstructed(i, m, step1) {
             // player can move to `step1`
             let mut new = m.clone();
+            new.odd_moves_made ^= true;
             new.player_at = step1;
             if Some(new.player_at) == i.key_at {
                 new.got_key = true;
@@ -205,15 +229,25 @@ fn resulting_room_mut(i: &RoomImmut, m: &RoomMut, direction: Direction) -> Optio
             return Some(new);
         }
         if let Some(step2) = step1.take_step(direction) {
-            if m.rocks_at.contains(step1)
-                && !m.rocks_at.contains(step2)
-                && !i.walls_at.contains(step2)
-                && Some(step2) != i.lock_at
-            {
+            let step2_obstructed = coord_obstructed(i, m, step2);
+            if m.rocks_at.contains(step1) && !step2_obstructed {
                 // player can kick rock from step1 to step2
                 let mut new = m.clone();
+                new.odd_moves_made ^= true;
                 new.rocks_at.remove(step1);
                 new.rocks_at.insert(step2);
+                return Some(new);
+            }
+            if m.skelly_at.contains(step1) {
+                let mut new = m.clone();
+                new.odd_moves_made ^= true;
+                new.skelly_at.remove(step1);
+                if step2_obstructed {
+                    // player destroys skelly
+                } else {
+                    // player kicks skelly from step1 to step2
+                    new.skelly_at.insert(step2);
+                }
                 return Some(new);
             }
         }
@@ -224,19 +258,24 @@ fn resulting_room_mut(i: &RoomImmut, m: &RoomMut, direction: Direction) -> Optio
 fn main() {
     let (room_immut, init_room_mut) = parse_init(INIT_ROOM_BYTE_STR).unwrap();
 
+    // Keyset is a growing set of reachable game states.
     let mut room_graph = fxhash::FxHashMap::<RoomMut, Option<RoomMutEdge>>::default();
     room_graph.insert(init_room_mut.clone(), None);
 
-    let start = std::time::Instant::now();
-
-    // Invariant: no duplication of contents in (to_visit U visiting)
+    // Invariant: no duplication of contents in (to_visit_in_1 U visiting)
     //   elements only added with addition to new keys in `room_graph`.
-    let mut visiting = Vec::with_capacity(128);
-    let mut to_visit = Vec::with_capacity(128);
+    let mut v = Vec::with_capacity(128);
+    let mut visiting = &mut v;
+    let mut v = Vec::with_capacity(128);
+    let mut to_visit_in_1 = &mut v;
+    let mut v = Vec::with_capacity(128);
+    let mut to_visit_in_2 = &mut v;
+
     visiting.push(init_room_mut);
 
-    for steps_taken in 0.. {
-        // println!("steps taken {}. visiting {}", steps_taken, visiting.len());
+    let start = std::time::Instant::now();
+    for points_needed in 0.. {
+        println!("points_needed {}. visiting {}", points_needed, visiting.len());
         if visiting.is_empty() {
             println!("No solutions");
             return;
@@ -251,17 +290,31 @@ fn main() {
                             step_direction: direction,
                         }));
                         if new_room_mut.player_at == room_immut.goal_at {
-                            // found a solution!
-                            println!("Took {:?}", start.elapsed());
+                            // found a solution! It's optimal by construction
+                            println!("Took {:?}. Needs {} points.", start.elapsed(), points_needed);
                             print_solution_path(&room_immut, &room_mut, &room_graph);
                             return;
                         } else {
-                            to_visit.push(new_room_mut);
+                            let which_spikes_up = if new_room_mut.odd_moves_made {
+                                &room_immut.odd_spikes_at
+                            } else {
+                                &room_immut.even_spikes_at
+                            };
+                            if which_spikes_up.contains(new_room_mut.player_at) {
+                                &mut to_visit_in_2
+                            } else {
+                                &mut to_visit_in_1
+                            }
+                            .push(new_room_mut);
                         }
                     }
                 }
             }
         }
-        std::mem::swap(&mut to_visit, &mut visiting);
+
+        let temp = visiting;
+        visiting = to_visit_in_1;
+        to_visit_in_1 = to_visit_in_2;
+        to_visit_in_2 = temp;
     }
 }
